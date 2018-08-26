@@ -345,6 +345,8 @@ public class BleClientManager : NSObject {
                                         timeout: Int?,
                                         promise: SafePromise) {
 
+        var earlyDisconnectCatcher : Disposable? = nil
+
         var connectionObservable = manager.retrievePeripherals(withIdentifiers: [deviceId])
             .flatMap { devices -> Observable<Peripheral> in
                 guard let device = devices.first else {
@@ -352,7 +354,20 @@ public class BleClientManager : NSObject {
                 }
                 return Observable.just(device)
             }
-            .flatMap { $0.connect() }
+            .flatMap { [weak self] device -> Observable<Peripheral> in
+                // On the edge of bluetooth range we may receive a disconnected event from the OS without a connection event.
+                // Treat this scenario as a cancelled connection attempt so that clients may retry.
+                earlyDisconnectCatcher = self?.manager.monitorDisconnection(for: device)
+                    .take(1)
+                    .subscribe(
+                        onNext: { [weak self] peripheral in
+                            BleError.cancelled().callReject(promise)
+                            self?.connectingPeripherals.removeDisposable(deviceId)
+                        }
+                    )
+
+                return device.connect()
+            }
 
         if let timeout = timeout {
             connectionObservable = connectionObservable.timeout(Double(timeout) / 1000.0, scheduler: ConcurrentDispatchQueueScheduler(queue: queue))
@@ -366,6 +381,7 @@ public class BleClientManager : NSObject {
                     peripheralToConnect = peripheral
                     self?.connectedPeripherals[deviceId] = peripheral
                     self?.clearCacheForPeripheral(peripheral: peripheral)
+                    earlyDisconnectCatcher?.dispose()
                 },
                 onError: {  [weak self] error in
                     if let rxerror = error as? RxError,
