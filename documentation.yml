@@ -9,6 +9,7 @@ toc:
   - Device
   - Service
   - Characteristic
+  - Descriptor
   - name: Utils
     description: |
       Utility functions and classes.
@@ -26,11 +27,14 @@ toc:
     description: |
       All Flow aliases and Flow types used in this library.
   - LogLevel
+  - ConnectionPriority
   - State
   - BleErrorCodeMessageMapping
   - BleManagerOptions
   - BleRestoredState
   - ScanOptions
+  - ScanCallbackType
+  - ScanMode
   - ConnectionOptions
   - DeviceId
   - Identifier

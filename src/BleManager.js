@@ -4,7 +4,8 @@
 import { Device } from './Device'
 import { Service } from './Service'
 import { Characteristic } from './Characteristic'
-import { State, LogLevel, type BleErrorCodeMessageMapping } from './TypeDefinition'
+import { Descriptor } from './Descriptor'
+import { State, LogLevel, type BleErrorCodeMessageMapping, ConnectionPriority } from './TypeDefinition'
 import { BleModule, EventEmitter } from './BleModule'
 import {
   parseBleError,
@@ -15,7 +16,7 @@ import {
   BleAndroidErrorCode,
   BleIOSErrorCode
 } from './BleError'
-import type { NativeDevice, NativeCharacteristic, NativeBleRestoredState } from './BleModule'
+import type { NativeDevice, NativeCharacteristic, NativeDescriptor, NativeBleRestoredState } from './BleModule'
 import type {
   Subscription,
   DeviceId,
@@ -223,6 +224,34 @@ export class BleManager {
   // Mark: Monitoring state --------------------------------------------------------------------------------------------
 
   /**
+   * Enable Bluetooth. This function blocks until BLE is in PoweredOn state. [Android only]
+   *
+   * @param {?TransactionId} transactionId Transaction handle used to cancel operation
+   * @returns {Promise<BleManager>} Promise completes when state transition was successful.
+   */
+  async enable(transactionId: ?TransactionId): Promise<BleManager> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    await this._callPromise(BleModule.enable(transactionId))
+    return this
+  }
+
+  /**
+   * Disable Bluetooth. This function blocks until BLE is in PoweredOff state. [Android only]
+   *
+   * @param {?TransactionId} transactionId Transaction handle used to cancel operation
+   * @returns {Promise<BleManager>} Promise completes when state transition was successful.
+   */
+  async disable(transactionId: ?TransactionId): Promise<BleManager> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    await this._callPromise(BleModule.disable(transactionId))
+    return this
+  }
+
+  /**
    * Current, global {@link State} of a {@link BleManager}. All APIs are working only when active state
    * is "PoweredOn".
    *
@@ -328,6 +357,29 @@ export class BleManager {
   }
 
   /**
+   * Request a connection parameter update. This functions may update connection parameters on Android API level 21 or
+   * above.
+   *
+   * @param {DeviceId} deviceIdentifier Device identifier.
+   * @param {ConnectionPriority} connectionPriority: Connection priority.
+   * @param {?TransactionId} transactionId Transaction handle used to cancel operation.
+   * @returns {Promise<Device>} Connected device.
+   */
+  async requestConnectionPriorityForDevice(
+    deviceIdentifier: DeviceId,
+    connectionPriority: $Values<typeof ConnectionPriority>,
+    transactionId: ?TransactionId
+  ): Promise<Device> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    const nativeDevice = await this._callPromise(
+      BleModule.requestConnectionPriorityForDevice(deviceIdentifier, connectionPriority, transactionId)
+    )
+    return new Device(nativeDevice, this)
+  }
+
+  /**
    * Reads RSSI for connected device.
    *
    * @param {DeviceId} deviceIdentifier Device identifier.
@@ -361,8 +413,9 @@ export class BleManager {
   // Mark: Connection management ---------------------------------------------------------------------------------------
 
   /**
-   * Returns a list of known peripherals by their identifiers.
+   * Returns a list of known devices by their identifiers.
    * @param {Array<DeviceId>} deviceIdentifiers List of device identifiers.
+   * @returns {Promise<Array<Device>>} List of known devices by their identifiers.
    */
   async devices(deviceIdentifiers: Array<DeviceId>): Promise<Array<Device>> {
     const nativeDevices = await this._callPromise(BleModule.devices(deviceIdentifiers))
@@ -376,6 +429,7 @@ export class BleManager {
    * which have discovered services. Returned devices **may not be connected** to your application. Make sure to check
    * if that's the case with function {@link #blemanagerisdeviceconnected|isDeviceConnected}.
    * @param {Array<UUID>} serviceUUIDs List of service UUIDs. Device must contain at least one of them to be listed.
+   * @returns {Promise<Array<Device>>} List of known devices with discovered services as stated in the parameter.
    */
   async connectedDevices(serviceUUIDs: Array<UUID>): Promise<Array<Device>> {
     const nativeDevices = await this._callPromise(BleModule.connectedDevices(serviceUUIDs))
@@ -414,7 +468,8 @@ export class BleManager {
    *
    * @param {DeviceId} deviceIdentifier {@link Device} identifier to be monitored.
    * @param {function(error: ?BleError, device: Device)} listener - callback returning error as a reason of disconnection
-   * if available and {@link Device} object.
+   * if available and {@link Device} object. If an error is null, that means the connection was terminated by
+   * {@link #blemanagercanceldeviceconnection|bleManager.cancelDeviceConnection()} call.
    * @returns {Subscription} Subscription on which `remove()` function can be called to unsubscribe.
    */
   onDeviceDisconnected(deviceIdentifier: DeviceId, listener: (error: ?BleError, device: Device) => void): Subscription {
@@ -454,15 +509,22 @@ export class BleManager {
   // Mark: Discovery ---------------------------------------------------------------------------------------------------
 
   /**
-   * Discovers all {@link Service}s and {@link Characteristic}s for {@link Device}.
+   * Discovers all {@link Service}s,  {@link Characteristic}s and {@link Descriptor}s for {@link Device}.
    *
    * @param {DeviceId} deviceIdentifier {@link Device} identifier.
+   * @param {?TransactionId} transactionId Transaction handle used to cancel operation
    * @returns {Promise<Device>} Promise which emits {@link Device} object if all available services and
    * characteristics have been discovered.
    */
-  async discoverAllServicesAndCharacteristicsForDevice(deviceIdentifier: DeviceId): Promise<Device> {
+  async discoverAllServicesAndCharacteristicsForDevice(
+    deviceIdentifier: DeviceId,
+    transactionId: ?TransactionId
+  ): Promise<Device> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
     const nativeDevice = await this._callPromise(
-      BleModule.discoverAllServicesAndCharacteristicsForDevice(deviceIdentifier)
+      BleModule.discoverAllServicesAndCharacteristicsForDevice(deviceIdentifier, transactionId)
     )
     return new Device(nativeDevice, this)
   }
@@ -521,6 +583,62 @@ export class BleManager {
     const characteristics = await this._callPromise(characteristicsPromise)
     return characteristics.map(nativeCharacteristic => {
       return new Characteristic(nativeCharacteristic, this)
+    })
+  }
+
+  /**
+   * List of discovered {@link Descriptor}s for given {@link Device}, {@link Service} and {@link Characteristic}.
+   *
+   * @param {DeviceId} deviceIdentifier {@link Device} identifier.
+   * @param {UUID} serviceUUID {@link Service} UUID.
+   * @param {UUID} characteristicUUID {@link Characteristic} UUID.
+   * @returns {Promise<Array<Descriptor>>} Promise which emits array of {@link Descriptor} objects which are
+   * discovered for a {@link Device}, {@link Service} in specified {@link Characteristic}.
+   */
+  descriptorsForDevice(
+    deviceIdentifier: DeviceId,
+    serviceUUID: UUID,
+    characteristicUUID: UUID
+  ): Promise<Array<Descriptor>> {
+    return this._handleDescriptors(BleModule.descriptorsForDevice(deviceIdentifier, serviceUUID, characteristicUUID))
+  }
+
+  /**
+   * List of discovered {@link Descriptor}s for given {@link Service} and {@link Characteristic}.
+   *
+   * @param {Identifier} serviceIdentifier {@link Service} identifier.
+   * @param {UUID} characteristicUUID {@link Characteristic} UUID.
+   * @returns {Promise<Array<Descriptor>>} Promise which emits array of {@link Descriptor} objects which are
+   * discovered for a {@link Service} in specified {@link Characteristic}.
+   * @private
+   */
+  _descriptorsForService(serviceIdentifier: Identifier, characteristicUUID: UUID): Promise<Array<Descriptor>> {
+    return this._handleDescriptors(BleModule.descriptorsForService(serviceIdentifier, characteristicUUID))
+  }
+
+  /**
+   * List of discovered {@link Descriptor}s for given {@link Characteristic}.
+   *
+   * @param {Identifier} characteristicIdentifier {@link Characteristic} identifier.
+   * @returns {Promise<Array<Descriptor>>} Promise which emits array of {@link Descriptor} objects which are
+   * discovered in specified {@link Characteristic}.
+   * @private
+   */
+  _descriptorsForCharacteristic(characteristicIdentifier: Identifier): Promise<Array<Descriptor>> {
+    return this._handleDescriptors(BleModule.descriptorsForCharacteristic(characteristicIdentifier))
+  }
+
+  /**
+   *  Common code for handling NativeDescriptor fetches.
+   * @param {Promise<Array<NativeDescriptor>>} descriptorsPromise Native descriptors.
+   * @returns {Promise<Array<Descriptor>>} Promise which emits array of {@link Descriptor} objects which are
+   * discovered in unique {@link Characteristic}.
+   * @private
+   */
+  async _handleDescriptors(descriptorsPromise: Promise<Array<NativeDescriptor>>): Promise<Array<Descriptor>> {
+    const descriptors = await this._callPromise(descriptorsPromise)
+    return descriptors.map(nativeDescriptor => {
+      return new Descriptor(nativeDescriptor, this)
     })
   }
 
@@ -910,5 +1028,227 @@ export class BleManager {
         BleModule.cancelTransaction(transactionId)
       }
     }
+  }
+
+  // Mark: Descriptors operations ----------------------------------------------------------------------------------
+
+  /**
+   * Read {@link Descriptor} value.
+   *
+   * @param {DeviceId} deviceIdentifier {@link Device} identifier.
+   * @param {UUID} serviceUUID {@link Service} UUID.
+   * @param {UUID} characteristicUUID {@link Characteristic} UUID.
+   * @param {UUID} descriptorUUID {@link Descriptor} UUID.
+   * @param {?TransactionId} transactionId optional `transactionId` which can be used in
+   * {@link #blemanagercanceltransaction|cancelTransaction()} function.
+   * @returns {Promise<Descriptor>} Promise which emits first {@link Descriptor} object matching specified
+   * UUID paths. Latest value of {@link Descriptor} will be stored inside returned object.
+   */
+  async readDescriptorForDevice(
+    deviceIdentifier: DeviceId,
+    serviceUUID: UUID,
+    characteristicUUID: UUID,
+    descriptorUUID: UUID,
+    transactionId: ?TransactionId
+  ): Promise<Descriptor> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    const nativeDescriptor = await this._callPromise(
+      BleModule.readDescriptorForDevice(
+        deviceIdentifier,
+        serviceUUID,
+        characteristicUUID,
+        descriptorUUID,
+        transactionId
+      )
+    )
+    return new Descriptor(nativeDescriptor, this)
+  }
+
+  /**
+   * Read {@link Descriptor} value.
+   *
+   * @param {Identifier} serviceIdentifier {@link Service} identifier.
+   * @param {UUID} characteristicUUID {@link Characteristic} UUID.
+   * @param {UUID} descriptorUUID {@link Descriptor} UUID.
+   * @param {?TransactionId} transactionId optional `transactionId` which can be used in
+   * {@link #blemanagercanceltransaction|cancelTransaction()} function.
+   * @returns {Promise<Descriptor>} Promise which emits first {@link Descriptor} object matching specified
+   * UUID paths. Latest value of {@link Descriptor} will be stored inside returned object.
+   * @private
+   */
+  async _readDescriptorForService(
+    serviceIdentifier: Identifier,
+    characteristicUUID: UUID,
+    descriptorUUID: UUID,
+    transactionId: ?TransactionId
+  ): Promise<Descriptor> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    const nativeDescriptor = await this._callPromise(
+      BleModule.readDescriptorForService(serviceIdentifier, characteristicUUID, descriptorUUID, transactionId)
+    )
+    return new Descriptor(nativeDescriptor, this)
+  }
+
+  /**
+   * Read {@link Descriptor} value.
+   *
+   * @param {Identifier} characteristicIdentifier {@link Characteristic} identifier.
+   * @param {UUID} descriptorUUID {@link Descriptor} UUID.
+   * @param {?TransactionId} transactionId optional `transactionId` which can be used in
+   * {@link #blemanagercanceltransaction|cancelTransaction()} function.
+   * @returns {Promise<Descriptor>} Promise which emits first {@link Descriptor} object matching specified
+   * UUID paths. Latest value of {@link Descriptor} will be stored inside returned object.
+   * @private
+   */
+  async _readDescriptorForCharacteristic(
+    characteristicIdentifier: Identifier,
+    descriptorUUID: UUID,
+    transactionId: ?TransactionId
+  ): Promise<Descriptor> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    const nativeDescriptor = await this._callPromise(
+      BleModule.readDescriptorForCharacteristic(characteristicIdentifier, descriptorUUID, transactionId)
+    )
+    return new Descriptor(nativeDescriptor, this)
+  }
+
+  /**
+   * Read {@link Descriptor} value.
+   *
+   * @param {Identifier} descriptorIdentifier {@link Descriptor} identifier.
+   * @param {?TransactionId} transactionId optional `transactionId` which can be used in
+   * {@link #blemanagercanceltransaction|cancelTransaction()} function.
+   * @returns {Promise<Descriptor>} Promise which emits first {@link Descriptor} object matching specified
+   * UUID paths. Latest value of {@link Descriptor} will be stored inside returned object.
+   * @private
+   */
+  async _readDescriptor(descriptorIdentifier: Identifier, transactionId: ?TransactionId): Promise<Descriptor> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    const nativeDescriptor = await this._callPromise(BleModule.readDescriptor(descriptorIdentifier, transactionId))
+    return new Descriptor(nativeDescriptor, this)
+  }
+
+  /**
+   * Write {@link Descriptor} value.
+   *
+   * @param {DeviceId} deviceIdentifier Connected device identifier
+   * @param {UUID} serviceUUID Service UUID
+   * @param {UUID} characteristicUUID Characteristic UUID
+   * @param {UUID} descriptorUUID Descriptor UUID
+   * @param {Base64} valueBase64 Value to be set coded in Base64
+   * @param {?TransactionId} transactionId Transaction handle used to cancel operation
+   * @returns {Promise<Descriptor>} Descriptor which saved passed value
+   */
+  async writeDescriptorForDevice(
+    deviceIdentifier: DeviceId,
+    serviceUUID: UUID,
+    characteristicUUID: UUID,
+    descriptorUUID: UUID,
+    valueBase64: Base64,
+    transactionId: ?TransactionId
+  ): Promise<Descriptor> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    const nativeDescriptor = await this._callPromise(
+      BleModule.writeDescriptorForDevice(
+        deviceIdentifier,
+        serviceUUID,
+        characteristicUUID,
+        descriptorUUID,
+        valueBase64,
+        transactionId
+      )
+    )
+    return new Descriptor(nativeDescriptor, this)
+  }
+
+  /**
+   * Write {@link Descriptor} value.
+   *
+   * @param {Identifier} serviceIdentifier Service identifier
+   * @param {UUID} characteristicUUID Characteristic UUID
+   * @param {UUID} descriptorUUID Descriptor UUID
+   * @param {Base64} valueBase64 Value to be set coded in Base64
+   * @param {?TransactionId} transactionId Transaction handle used to cancel operation
+   * @returns {Promise<Descriptor>} Descriptor which saved passed value
+   * @private
+   */
+  async _writeDescriptorForService(
+    serviceIdentifier: Identifier,
+    characteristicUUID: UUID,
+    descriptorUUID: UUID,
+    valueBase64: Base64,
+    transactionId: ?TransactionId
+  ): Promise<Descriptor> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    const nativeDescriptor = await this._callPromise(
+      BleModule.writeDescriptorForService(
+        serviceIdentifier,
+        characteristicUUID,
+        descriptorUUID,
+        valueBase64,
+        transactionId
+      )
+    )
+    return new Descriptor(nativeDescriptor, this)
+  }
+
+  /**
+   * Write {@link Descriptor} value.
+   *
+   * @param {Identifier} characteristicIdentifier Characteristic identifier
+   * @param {UUID} descriptorUUID Descriptor UUID
+   * @param {Base64} valueBase64 Value to be set coded in Base64
+   * @param {?TransactionId} transactionId Transaction handle used to cancel operation
+   * @returns {Promise<Descriptor>} Descriptor which saved passed value
+   * @private
+   */
+  async _writeDescriptorForCharacteristic(
+    characteristicIdentifier: Identifier,
+    descriptorUUID: UUID,
+    valueBase64: Base64,
+    transactionId: ?TransactionId
+  ): Promise<Descriptor> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    const nativeDescriptor = await this._callPromise(
+      BleModule.writeDescriptorForCharacteristic(characteristicIdentifier, descriptorUUID, valueBase64, transactionId)
+    )
+    return new Descriptor(nativeDescriptor, this)
+  }
+
+  /**
+   * Write {@link Descriptor} value.
+   *
+   * @param {Identifier} descriptorIdentifier Descriptor identifier
+   * @param {Base64} valueBase64 Value to be set coded in Base64
+   * @param {?TransactionId} transactionId Transaction handle used to cancel operation
+   * @returns {Promise<Descriptor>} Descriptor which saved passed value
+   * @private
+   */
+  async _writeDescriptor(
+    descriptorIdentifier: Identifier,
+    valueBase64: Base64,
+    transactionId: ?TransactionId
+  ): Promise<Descriptor> {
+    if (!transactionId) {
+      transactionId = this._nextUniqueID()
+    }
+    const nativeDescriptor = await this._callPromise(
+      BleModule.writeDescriptor(descriptorIdentifier, valueBase64, transactionId)
+    )
+    return new Descriptor(nativeDescriptor, this)
   }
 }

@@ -5,8 +5,9 @@ export { BleManager } from './src/BleManager'
 export { Device } from './src/Device'
 export { Service } from './src/Service'
 export { Characteristic } from './src/Characteristic'
+export { Descriptor } from './src/Descriptor'
 export { fullUUID } from './src/Utils'
-export { State, LogLevel } from './src/TypeDefinition'
+export { State, LogLevel, ConnectionPriority, ScanCallbackType, ScanMode } from './src/TypeDefinition'
 
 export type {
   Subscription,
