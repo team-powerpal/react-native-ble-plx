@@ -63,6 +63,7 @@ import java.util.concurrent.TimeUnit;
 import rx.Observable;
 import rx.Observer;
 import rx.Subscription;
+import rx.schedulers.Schedulers;
 import rx.functions.Action0;
 import rx.functions.Action1;
 import rx.functions.Func0;
@@ -1326,42 +1327,52 @@ public class BleModule extends ReactContextBaseJavaModule {
                 return Observable.error(new CannotMonitorCharacteristicException(gattCharacteristic));
             }
         })
-                .flatMap(new Func1<Observable<byte[]>, Observable<byte[]>>() {
-                    @Override
-                    public Observable<byte[]> call(Observable<byte[]> observable) {
-                        return observable;
-                    }
-                })
-                .doOnUnsubscribe(new Action0() {
-                    @Override
-                    public void call() {
-                        promise.resolve(null);
-                        transactions.removeSubscription(transactionId);
-                    }
-                })
-                .subscribe(new Observer<byte[]>() {
-                    @Override
-                    public void onCompleted() {
-                        promise.resolve(null);
-                        transactions.removeSubscription(transactionId);
-                    }
+        .flatMap(new Func1<Observable<byte[]>, Observable<byte[]>>() {
+            @Override
+            public Observable<byte[]> call(Observable<byte[]> observable) {
+                return observable;
+            }
+        })
+        // POWERPAL POWERPAL POWERPAL
+        // The default library behaviour is to throw a MissingBackpressureException when a history sync fires too many notifications for
+        // the phone to keep up with. We see this reliably overnight on a Samsung S10 which presumably drops into ultra-lower-power mode.
+        // According to the RxJava docs, adding a backpressure buffering strategy here should queue up these readings.
+        // This carries the risk of an OutOfMemory exception, but that's unlikely given the small size of our reading data.
+        // https://github.com/Polidea/RxAndroidBle/issues/256#issuecomment-330919909
+        // Fix based on unmerged pull request: https://github.com/Polidea/react-native-ble-plx/pull/491/files
+        .onBackpressureBuffer()
+        .observeOn(Schedulers.computation())
+        .doOnUnsubscribe(new Action0() {
+            @Override
+            public void call() {
+                promise.resolve(null);
+                transactions.removeSubscription(transactionId);
+            }
+        })
+        .subscribe(new Observer<byte[]>() {
+            @Override
+            public void onCompleted() {
+                promise.resolve(null);
+                transactions.removeSubscription(transactionId);
+            }
 
-                    @Override
-                    public void onError(Throwable e) {
-                        errorConverter.toError(e).reject(promise);
-                        transactions.removeSubscription(transactionId);
-                    }
+            @Override
+            public void onError(Throwable e) {
+                errorConverter.toError(e).reject(promise);
+                transactions.removeSubscription(transactionId);
+            }
 
-                    @Override
-                    public void onNext(byte[] bytes) {
-                        characteristic.logValue("Notification from", bytes);
-                        WritableArray jsResult = Arguments.createArray();
-                        jsResult.pushNull();
-                        jsResult.pushMap(characteristic.toJSObject(bytes));
-                        jsResult.pushString(transactionId);
-                        sendEvent(Event.ReadEvent, jsResult);
-                    }
-                });
+
+            @Override
+            public void onNext(byte[] bytes) {
+                characteristic.logValue("Notification from", bytes);
+                WritableArray jsResult = Arguments.createArray();
+                jsResult.pushNull();
+                jsResult.pushMap(characteristic.toJSObject(bytes));
+                jsResult.pushString(transactionId);
+                sendEvent(Event.ReadEvent, jsResult);
+            }
+        });
 
         transactions.replaceSubscription(transactionId, subscription);
     }
